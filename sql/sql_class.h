@@ -589,6 +589,25 @@ typedef struct system_variables
     'COLUMN_TYPE' field.
   */
   my_bool show_old_temporals;
+  
+  /*TDSQL: add variables for columnstore (which also known as InfiniDB)*/
+  ulong infinidb_vtable_mode;
+  ulong infinidb_decimal_scale;
+  my_bool infinidb_use_decimal_scale;
+  my_bool infinidb_ordered_only;
+  ulong infinidb_string_scan_threshold;
+  ulong infinidb_compression_type;
+  ulong infinidb_stringtable_threshold;
+  ulong infinidb_diskjoin_smallsidelimit;
+  ulong infinidb_diskjoin_largesidelimit;
+  ulong infinidb_diskjoin_bucketsize;
+  ulong infinidb_um_mem_limit;
+  my_bool infinidb_varbin_always_hex;
+  my_bool infinidb_double_for_decimal_math;
+  ulong infinidb_local_query;
+  my_bool infinidb_use_import_for_batchinsert;
+  ulong infinidb_import_for_batchinsert_delimiter;
+  ulong infinidb_import_for_batchinsert_enclosed_by;
 } SV;
 
 
@@ -1509,7 +1528,10 @@ public:
    This flag needs to be removed once @@SESSION.GTID_EXECUTED is deprecated.
   */
   bool gtid_executed_warning_issued;
-
+  /*TDSQL*/
+  struct INFINIDB_VTABLE;
+  Reprepare_observer *m_reprepare_observer;
+  ulonglong client_capabilities;
 private:
   /**
     The query associated with this statement.
@@ -2866,6 +2888,83 @@ public:
     KILLED_NO_VALUE      /* means neither of the states */
   };
   killed_state volatile killed;
+  
+  /*
+    TDSQL: add infinidb_state type & INFINIDB_VTABLE struct
+    This structure needs to be removed and replaced with standard plugin structures.
+    There may be some pain, as this structure is used inside the server code \
+    and the plugin stuff wasn't designed for that.
+   */
+   public:
+ 
+   enum infinidb_state
+   {
+    INFINIDB_INIT_CONNECT = 0,		// intend to use to drop leftover vtable when logon. not being used now.
+    INFINIDB_INIT,
+    INFINIDB_CREATE_VTABLE,
+    INFINIDB_ALTER_VTABLE,
+    INFINIDB_SELECT_VTABLE,
+    INFINIDB_DROP_VTABLE,
+    INFINIDB_DISABLE_VTABLE,
+    INFINIDB_REDO_PHASE1,	        // post process requires to re-create vtable
+    INFINIDB_ORDER_BY,			// for InfiniDB handler to ignore the 2nd scan for order by
+    INFINIDB_REDO_QUERY,		// redo query with the normal mysql path
+    INFINIDB_ERROR = 32,
+   };
+   struct INFINIDB_VTABLE
+   {
+    String original_query;
+    String create_vtable_query;
+    String alter_vtable_query;
+    String select_vtable_query;
+    String drop_vtable_query;
+    String insert_vtable_query;
+    infinidb_state vtable_state;        // flag for InfiniDB MySQL virtual table structure
+    bool autoswitch;
+    bool has_order_by;
+    bool mysql_optimizer_off;
+    bool duplicate_field_name;          // @bug 1928. duplicate field name in create_phase will be ingored.
+    bool call_sp;
+    bool override_largeside_estimate;
+    void* cal_conn_info;
+    bool isUnion;
+    bool impossibleWhereOnUnion;
+    bool isInsertSelect;
+    bool isUpdateWithDerive;
+    bool isInfiniDBDML;                  // default false
+    bool hasInfiniDBTable;               // default false
+    bool isNewQuery;
+    INFINIDB_VTABLE() : cal_conn_info(NULL) {init();}
+    void init()
+    {
+         autoswitch = false;
+         has_order_by = false;
+         mysql_optimizer_off = false;
+         duplicate_field_name = false;
+         call_sp = false;
+         override_largeside_estimate = false;
+         if (cal_conn_info)
+  	 {
+             /*
+                Kludge because cal_conn_info is created in the engine and just left
+                laying about. It can't be reused unless an init function is made.
+                This whole mechanism should change when INFINIFB_VTABLE is created via API.
+                If we can't get the structure to work via api, then we need to rethink
+                how cal_conn_info is created and destroyed. Perhaps include the definition
+                of cal_connection_info here and control its creation more systematically.
+              */
+               free(cal_conn_info);
+          }
+          cal_conn_info = NULL;
+          isUnion = false;
+          impossibleWhereOnUnion = false;
+          isUpdateWithDerive = false;
+          isInfiniDBDML = false;
+          hasInfiniDBTable = false;
+          isNewQuery = true;
+     }
+     };
+     INFINIDB_VTABLE infinidb_vtable;	    // InfiniDB custom structure
 
   /* scramble - random string sent to client on handshake */
   char	     scramble[SCRAMBLE_LENGTH+1];
@@ -2927,7 +3026,7 @@ public:
   /* set during loop of derived table processing */
   bool       derived_tables_processing;
   bool       tablespace_op;     /* This is true in DISCARD/IMPORT TABLESPACE */
-
+  bool       abort_on_warning;  /* TDSQL */
   /** Current SP-runtime context. */
   sp_rcontext *sp_runtime_ctx;
   sp_cache   *sp_proc_cache;
